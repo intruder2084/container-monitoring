@@ -1,0 +1,107 @@
+---
+- name: Deploy containers for monitoring
+  hosts: alertmgr-deploy
+  gather_facts: no
+  vars:
+    grafana_url: http://127.0.0.1:3000
+    grafana_username: admin
+
+  tasks:
+
+    - name: Include secret variables
+      include_vars: vault_secrets.yml
+      no_log: true
+
+    - name: Change SSH password for root user
+      user:
+        name: root
+        password: "{{ ssh_password | password_hash('sha512') }}"
+        update_password: 'always'
+
+    - name: Install required packages
+      apt:
+        name:
+          - python3-apt    
+          - python3-pip
+        state: present
+
+    - name: Install Python library for Docker
+      pip:
+        name: docker
+
+    - name: Add key
+      apt_key:
+        url: https://download.docker.com/linux/debian/gpg
+        state: present
+
+    - name: Add Docker APT repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/debian buster stable"
+        state: present
+
+    - name: Install Docker packages
+      apt:
+        name: ['docker-ce=5:23.0.3-1~debian.10~buster', 'docker-ce-cli=5:23.0.3-1~debian.10~buster', 'containerd.io=1.6.20-1', 'docker-buildx-plugin=0.10.4-1~debian.10~buster', 'docker-compose-plugin=2.17.2-1~debian.10~buster', 'docker-compose=1.21.0-3']
+        state: present
+        update_cache: yes
+
+    - name: Create user
+      user:
+        name: 'dockeruser'
+        group: 'docker'
+
+    - name: Docker start
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Make directory for containers
+      file:
+        path: "/tmp/monitoring/"
+        state: directory
+        mode: '0755'
+        owner: 'dockeruser'
+        group: 'docker'
+
+    - name: Copy files
+      copy:
+        src: "{{ item }}"
+        dest: "/tmp/monitoring/{{ item }}"
+      with_items:
+        - docker-compose.yml
+        - promscrape.yml
+        - VM-dashboard.json
+        - alert.rules.yml
+
+    - name: Build and deploy containers
+      docker_compose:
+        project_src: /tmp/monitoring/
+        state: present
+
+    - name: Wait for Grafana to start
+      uri:
+        url: "{{ grafana_url }}"
+        status_code: 200
+      register: result
+      until: result.status == 200
+      retries: 30
+      delay: 5
+
+    - name: Add VictoriaMetrics datasource
+      community.grafana.grafana_datasource:
+        grafana_url: "{{ grafana_url }}"
+        grafana_user: "{{ grafana_username }}"
+        grafana_password: "{{ grafana_password }}"
+        ds_type: prometheus
+        name: VictoriaMetrics
+        ds_url: "http://victoriametrics:8428"
+        access: proxy
+
+    - name: Import cAdvisor dashboard
+      community.grafana.grafana_dashboard:
+        grafana_url: "{{ grafana_url }}"
+        grafana_user: "{{ grafana_username }}"
+        grafana_password: "{{ grafana_password }}"
+        path: /tmp/monitoring/VM-dashboard.json
+        overwrite: yes
