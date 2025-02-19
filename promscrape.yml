@@ -1,4 +1,4 @@
 scrape_configs:
   - job_name: cadvisor
     static_configs:
-      - targets: ["cadvizor:8080"]
+      - targets: ["cadvizor:8081"]
